@@ -104,6 +104,48 @@ public class AnalyzerActivity extends AppCompatActivity implements com.pbcnx.ope
         }
     };
 
+    /** Kept for a rebuild: the player is replaced when the device's video decoder fails. */
+    private DefaultLoadControl loadControl;
+    /** True once this session has moved its video to FFmpeg. */
+    private boolean softwareVideo;
+
+    private final Player.Listener playerListener = new Player.Listener() {
+        @Override
+        public void onPlayerError(PlaybackException error) {
+            setStatus("Player: " + error.getErrorCodeName() + " - " + error.getMessage());
+            // The device's video decoder threw (a Galaxy A01 on a 1080 High-profile mux): in Auto,
+            // FFmpeg plays the same stream, so switch instead of leaving the picture black.
+            if (!softwareVideo && state.selectedServiceId != -1
+                    && PlayerFactory.isDeviceVideoDecoderError(error)
+                    && !com.pbcnx.opendtvmod.player.DecoderPrefs.manual(AnalyzerActivity.this)) {
+                state.ui.post(() -> switchToSoftwareVideo(error));
+            }
+        }
+    };
+
+    /**
+     * Rebuilds the player with FFmpeg video and plays the same service again, for the rest of this
+     * session. The multiplex remembers it too, so the watch screen starts on FFmpeg there.
+     */
+    private void switchToSoftwareVideo(PlaybackException error) {
+        if (softwareVideo || isFinishing() || isDestroyed()) return;
+        softwareVideo = true;
+        if (state.currentTunedKhz > 0) {
+            com.pbcnx.opendtvmod.player.DecoderPrefs.rememberAuto(this, state.currentTunedKhz, true);
+        }
+        state.player.removeListener(playerListener);
+        state.player.release();
+        state.player = PlayerFactory.build(this, loadControl, false, true);
+        state.player.addListener(playerListener);
+        state.playerView.setPlayer(state.player);
+        state.pipe.clear();
+        state.player.setMediaSource(PlayerFactory.liveSource(state.pipe, () -> state.demux));
+        state.player.prepare();
+        state.player.setPlayWhenReady(true);
+        setStatus("Video: the device's decoder failed (" + error.getErrorCodeName()
+                + ") - switched to software (FFmpeg)");
+    }
+
     /** Playback installs a sink on the hub's demux, so claim the hub first. */
     void claimTuner() {
         sources.claim();
@@ -168,18 +210,13 @@ public class AnalyzerActivity extends AppCompatActivity implements com.pbcnx.ope
 
 
         // Live TV: start after ~1.5 s of data, keep at most 15 s, and refill 2.5 s after an underrun.
-        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+        loadControl = new DefaultLoadControl.Builder()
                 .setBufferDurationsMs(2500, 15000, 1500, 2500)
                 .build();
         state.player = PlayerFactory.build(this, loadControl, false);
         state.playerView.setPlayer(state.player);
         state.captionOverlay = new CaptionOverlay(state.playerView);
-        state.player.addListener(new Player.Listener() {
-            @Override
-            public void onPlayerError(PlaybackException error) {
-                setStatus("Player: " + error.getErrorCodeName() + " - " + error.getMessage());
-            }
-        });
+        state.player.addListener(playerListener);
 
         // Tuner unplugged: stop cleanly. (Plugging in is handled through onNewIntent / the launch intent.)
         IntentFilter detach = new IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED);
