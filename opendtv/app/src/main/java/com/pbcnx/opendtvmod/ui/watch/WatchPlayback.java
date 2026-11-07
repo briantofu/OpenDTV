@@ -107,6 +107,21 @@ public final class WatchPlayback {
         public void onPlayerError(PlaybackException error) {
             Log.w(TAG, "player error: " + error.getErrorCodeName() + " " + error.getMessage());
             final ChannelEntry e = host.currentChannel();
+            // The device's video decoder threw. Retrying it ends on the No Signal card over a locked
+            // mux, and the stall watchdogs never see an error. Auto switches to FFmpeg at once when
+            // the decoder presented nothing, or when it fails a second time on the same channel; one
+            // failure after a picture is retried as before. Manual is the viewer's call.
+            if (PlayerFactory.isDeviceVideoDecoderError(error) && !softwareFallbackTried
+                    && !playerForcedSoftwareVideo && !DecoderPrefs.manual(host.activity())) {
+                if (e != decoderErrorChannel) {
+                    decoderErrorChannel = e;
+                    decoderErrors = 0;
+                }
+                if (!videoRendered || ++decoderErrors >= 2) {
+                    fallbackToSoftwareDecoder("the device's video decoder failed: " + error.getErrorCodeName());
+                    return;
+                }
+            }
             if (e != null && !host.isFinishing() && retries++ < MAX_RETRIES) {
                 // Same multiplex: no retune, just a fresh filter + prepare.
                 host.ui().postDelayed(() -> {
@@ -157,6 +172,9 @@ public final class WatchPlayback {
     int retries;
     volatile boolean videoRendered;
     boolean softwareFallbackTried;
+    /** Device video-decoder failures on {@link #decoderErrorChannel}; a new channel starts at 0. */
+    int decoderErrors;
+    @Nullable ChannelEntry decoderErrorChannel;
     boolean playerForcedSoftwareVideo;
     boolean decoderRebuildPending;
     DefaultLoadControl loadControl;

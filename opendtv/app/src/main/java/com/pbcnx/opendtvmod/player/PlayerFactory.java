@@ -96,6 +96,38 @@ public final class PlayerFactory {
     }
 
     /**
+     * True when the device's own video decoder (MediaCodec) failed: it would not start, could not be
+     * queried, or threw while decoding. That is the decoder's fault, not the channel's, so Auto has a
+     * better answer than retrying the same decoder: FFmpeg.
+     *
+     * <p>A Galaxy A01 does this on a 1080 High-profile mux (ERROR_CODE_DECODING_FAILED from
+     * MediaCodecVideoRenderer before the first frame), while FFmpeg plays the same stream. It is a
+     * different failure from ALLTV on other Qualcomm decoders, which take the stream and present
+     * nothing: the stall watchdogs catch that one, but an error never reaches them. FFmpeg's own
+     * failures and RESOURCES_RECLAIMED (another app took the codec) are not this.</p>
+     */
+    @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
+    public static boolean isDeviceVideoDecoderError(androidx.media3.common.PlaybackException error) {
+        if (!(error instanceof androidx.media3.exoplayer.ExoPlaybackException)) return false;
+        androidx.media3.exoplayer.ExoPlaybackException e = (androidx.media3.exoplayer.ExoPlaybackException) error;
+        if (e.type != androidx.media3.exoplayer.ExoPlaybackException.TYPE_RENDERER
+                || e.rendererName == null || !e.rendererName.startsWith("MediaCodec")
+                || e.rendererFormat == null || !MimeTypes.isVideo(e.rendererFormat.sampleMimeType)) {
+            return false;
+        }
+        switch (error.errorCode) {
+            case androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED:
+            case androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED:
+            case androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED:
+            case androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES:
+            case androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
      * @param audioFocus true for the normal TV player, false for the Analyzer
      */
     public static ExoPlayer build(Context context, DefaultLoadControl loadControl, boolean audioFocus) {
